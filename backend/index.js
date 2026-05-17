@@ -1,4 +1,6 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -23,9 +25,16 @@ import {
   updateTask,
 } from './db.js';
 
+dotenv.config({
+  path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.env'),
+  override: true,
+});
+
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const corsOrigin = process.env.CORS_ORIGIN || '*';
+let databaseReady = false;
+let databaseError = null;
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', corsOrigin);
@@ -40,6 +49,21 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  if (req.path === '/api/health' || !req.path.startsWith('/api')) {
+    return next();
+  }
+
+  if (!databaseReady) {
+    return res.status(503).json({
+      message: 'Database connection is not ready yet.',
+      error: databaseError ? databaseError.message : null,
+    });
+  }
+
+  return next();
+});
 
 const signupSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters.'),
@@ -124,20 +148,26 @@ function normalizeDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+app.get('/', (_req, res) => {
+  res.send('Backend running 🚀');
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, databaseReady });
+});
+
 async function bootstrap() {
+  initDatabase()
+    .then(() => {
+      databaseReady = true;
+      console.log('MongoDB Connected ✅');
+    })
+    .catch((error) => {
+      databaseError = error;
+      console.error('Failed to connect to MongoDB:', error);
+    });
+
   try {
-    await initDatabase();
-
-    console.log('MongoDB Connected ✅');
-
-    // Root route for Railway health check
-    app.get('/', (_req, res) => {
-      res.send('Backend running 🚀');
-    });
-
-    app.get('/api/health', (_req, res) => {
-      res.json({ ok: true });
-    });
 
     app.post('/api/auth/signup', async (req, res) => {
       const result = signupSchema.safeParse(req.body);
@@ -232,7 +262,6 @@ async function bootstrap() {
       return res.status(404).send('Not found');
     });
 
-    // IMPORTANT FIX FOR RAILWAY
     app.listen(port, '0.0.0.0', () => {
       console.log(`🚀 Server running on port ${port}`);
     });

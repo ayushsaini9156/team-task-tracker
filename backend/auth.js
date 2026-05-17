@@ -1,10 +1,12 @@
 import jwt from 'jsonwebtoken';
 import { findUserById } from './db.js';
 
-const jwtSecret = process.env.JWT_SECRET || 'development-secret';
+function getJwtSecret() {
+  return process.env.JWT_SECRET || 'development-secret';
+}
 
 export function signToken(user) {
-  return jwt.sign({ sub: String(user.id) }, jwtSecret, { expiresIn: '7d' });
+  return jwt.sign({ sub: String(user.id) }, getJwtSecret(), { expiresIn: '7d' });
 }
 
 export async function authenticate(req, res, next) {
@@ -17,7 +19,7 @@ export async function authenticate(req, res, next) {
   const token = header.slice('Bearer '.length);
 
   try {
-    const payload = jwt.verify(token, jwtSecret);
+    const payload = jwt.verify(token, getJwtSecret());
     const userId = payload.sub;
 
     if (!userId) {

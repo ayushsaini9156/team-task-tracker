@@ -52,6 +52,34 @@ const Task = mongoose.models.Task || mongoose.model('Task', taskSchema);
 
 let connectPromise;
 
+function normalizeMongoUri(uri) {
+  if (!uri) {
+    return uri;
+  }
+
+  const trimmed = uri.trim().replace(/^['"]|['"]$/g, '');
+
+  if (!trimmed.startsWith('mongodb+srv://')) {
+    return trimmed;
+  }
+
+  const scheme = 'mongodb+srv://';
+  const remainder = trimmed.slice(scheme.length);
+  const boundaryIndex = remainder.search(/[/?#]/);
+  const authority = boundaryIndex === -1 ? remainder : remainder.slice(0, boundaryIndex);
+  const suffix = boundaryIndex === -1 ? '' : remainder.slice(boundaryIndex);
+  const atIndex = authority.lastIndexOf('@');
+  const credentials = atIndex >= 0 ? authority.slice(0, atIndex + 1) : '';
+  const host = atIndex >= 0 ? authority.slice(atIndex + 1) : authority;
+  const colonIndex = host.lastIndexOf(':');
+
+  if (colonIndex > 0 && /^[0-9]+$/.test(host.slice(colonIndex + 1))) {
+    return `${scheme}${credentials}${host.slice(0, colonIndex)}${suffix}`;
+  }
+
+  return trimmed;
+}
+
 function toId(value) {
   if (!value) {
     return null;
@@ -119,7 +147,7 @@ async function connectDatabase() {
   }
 
   if (!connectPromise) {
-    const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/team-task-tracker';
+    const uri = normalizeMongoUri(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/team-task-tracker');
     connectPromise = mongoose.connect(uri);
   }
 
