@@ -72,12 +72,36 @@ function normalizeMongoUri(uri) {
   const credentials = atIndex >= 0 ? authority.slice(0, atIndex + 1) : '';
   const host = atIndex >= 0 ? authority.slice(atIndex + 1) : authority;
   const colonIndex = host.lastIndexOf(':');
+  const normalizedCredentials = (() => {
+    if (!credentials) {
+      return '';
+    }
+
+    const userInfo = credentials.slice(0, -1);
+    const credentialSeparator = userInfo.indexOf(':');
+
+    if (credentialSeparator === -1) {
+      return `${encodeURIComponent(userInfo)}@`;
+    }
+
+    const username = userInfo.slice(0, credentialSeparator);
+    const password = userInfo.slice(credentialSeparator + 1);
+    const safeDecode = (value) => {
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    };
+
+    return `${encodeURIComponent(safeDecode(username))}:${encodeURIComponent(safeDecode(password))}@`;
+  })();
 
   if (colonIndex > 0 && /^[0-9]+$/.test(host.slice(colonIndex + 1))) {
-    return `${scheme}${credentials}${host.slice(0, colonIndex)}${suffix}`;
+    return `${scheme}${normalizedCredentials}${host.slice(0, colonIndex)}${suffix}`;
   }
 
-  return trimmed;
+  return `${scheme}${normalizedCredentials}${host}${suffix}`;
 }
 
 function toId(value) {

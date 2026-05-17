@@ -45,6 +45,7 @@ npm run dev
 ```
 
 4. Make sure MongoDB is running locally or update `MONGODB_URI` in `backend/.env` to your Atlas connection string.
+	If the Atlas password contains special characters such as `#`, encode them in the URI, for example `#` -> `%23`.
 5. Open the frontend at the Vite dev server URL shown in the terminal.
 
 ## Demo Accounts

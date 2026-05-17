@@ -148,6 +148,31 @@ function normalizeDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function toNumericId(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function buildProjectResponse(projectId) {
+  const [project, members, tasks, assignableMembers] = await Promise.all([
+    getProjectForUser({ projectId, userId: projectId }),
+    listProjectMembers(projectId),
+    listProjectTasks(projectId),
+    listAssignableMembers(projectId),
+  ]);
+
+  return {
+    project,
+    members,
+    tasks,
+    assignableMembers,
+  };
+}
+
 app.get('/', (_req, res) => {
   res.send('Backend running 🚀');
 });
@@ -250,7 +275,163 @@ async function bootstrap() {
       });
     });
 
-    // Keep all your remaining routes here...
+    app.get('/api/dashboard', authenticate, async (req, res) => {
+      return res.json(await getDashboard(req.user.id));
+    });
+
+    app.get('/api/projects', authenticate, async (req, res) => {
+      return res.json({ projects: await listProjectsForUser(req.user.id) });
+    });
+
+    app.post('/api/projects', authenticate, async (req, res) => {
+      const result = projectSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
+      }
+
+      const project = await createProject({
+        ownerId: req.user.id,
+        name: result.data.name,
+        description: result.data.description || '',
+      });
+
+      return res.status(201).json({
+        project,
+        members: await listProjectMembers(project.id),
+        tasks: [],
+        assignableMembers: [{ id: req.user.id, name: req.user.name, email: req.user.email, role: 'Admin' }],
+      });
+    });
+
+    app.get('/api/projects/:projectId', authenticate, async (req, res) => {
+      const projectId = req.params.projectId;
+      const project = await requireProjectAccess(projectId, req.user.id, res);
+
+      if (!project) {
+        return null;
+      }
+
+      return res.json({
+        project,
+        members: await listProjectMembers(projectId),
+        tasks: await listProjectTasks(projectId),
+        assignableMembers: await listAssignableMembers(projectId),
+      });
+    });
+
+    app.post('/api/projects/:projectId/members', authenticate, async (req, res) => {
+      const projectId = req.params.projectId;
+      const project = await requireProjectAdmin(projectId, req.user.id, res);
+
+      if (!project) {
+        return null;
+      }
+
+      const result = memberSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
+      }
+
+      const memberUser = await findUserByEmail(result.data.email);
+      if (!memberUser) {
+        return res.status(404).json({
+          message: 'No user found with that email address.',
+        });
+      }
+
+      const member = await addProjectMember({
+        projectId,
+        userId: memberUser.id,
+        role: result.data.role,
+      });
+
+      return res.status(201).json({ member });
+    });
+
+    app.get('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
+      const projectId = req.params.projectId;
+      const project = await requireProjectAccess(projectId, req.user.id, res);
+
+      if (!project) {
+        return null;
+      }
+
+      return res.json({
+        tasks: await listProjectTasks(projectId),
+      });
+    });
+
+    app.post('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
+      const projectId = req.params.projectId;
+      const project = await requireProjectAccess(projectId, req.user.id, res);
+
+      if (!project) {
+        return null;
+      }
+
+      const result = taskSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
+      }
+
+      const assigneeId = toNumericId(result.data.assigneeId);
+
+      const task = await createTask({
+        projectId,
+        title: result.data.title,
+        description: result.data.description || '',
+        status: result.data.status,
+        priority: result.data.priority,
+        dueDate: normalizeDate(result.data.dueDate),
+        assigneeId,
+        createdById: req.user.id,
+      });
+
+      return res.status(201).json({ task });
+    });
+
+    app.patch('/api/tasks/:taskId', authenticate, async (req, res) => {
+      const taskId = req.params.taskId;
+      const task = await getTaskById(taskId);
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found.' });
+      }
+
+      const project = await requireProjectAccess(task.projectId, req.user.id, res);
+      if (!project) {
+        return null;
+      }
+
+      const result = taskPatchSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
+      }
+
+      const patch = {
+        ...result.data,
+      };
+
+      if (patch.assigneeId !== undefined) {
+        patch.assigneeId = toNumericId(patch.assigneeId);
+      }
+
+      if (patch.dueDate !== undefined) {
+        patch.dueDate = normalizeDate(patch.dueDate);
+      }
+
+      const updatedTask = await updateTask(taskId, patch);
+      return res.json({ task: updatedTask });
+    });
 
     app.use((req, res) => {
       if (req.path.startsWith('/api')) {
