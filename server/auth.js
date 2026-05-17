@@ -15,7 +15,7 @@ export function signToken(user) {
   );
 }
 
-export function authenticate(req, res, next) {
+export async function authenticate(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
 
@@ -25,7 +25,7 @@ export function authenticate(req, res, next) {
 
   try {
     const payload = jwt.verify(token, jwtSecret);
-    const user = findUserById(Number(payload.sub));
+    const user = await findUserById(payload.sub);
 
     if (!user) {
       return res.status(401).json({ message: 'Authentication token is no longer valid.' });

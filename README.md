@@ -6,7 +6,7 @@ Team Task Tracker is a full-stack project management app with signup/login, proj
 
 - React + Vite frontend
 - Express REST API
-- SQLite database with `better-sqlite3`
+- MongoDB database with `mongoose`
 - JWT authentication and bcrypt password hashing
 
 ## Features
@@ -37,7 +37,8 @@ copy .env.example .env
 npm run dev
 ```
 
-4. Open the frontend at the Vite dev server URL shown in the terminal.
+4. Make sure MongoDB is running locally or update `MONGODB_URI` to your Atlas connection string.
+5. Open the frontend at the Vite dev server URL shown in the terminal.
 
 ## Demo Accounts
 
@@ -61,8 +62,8 @@ The Express server serves the built frontend from `dist` in production.
 
 1. Create a Railway service from this repository.
 2. Set `JWT_SECRET` in Railway variables.
-3. Set `PORT` to the Railway-provided value if needed.
-4. If you want durable storage, set `DB_PATH` to a mounted volume path such as `/data/team-task-tracker.db` and attach a Railway volume.
+3. Set `MONGODB_URI` to your Railway MongoDB add-on or Atlas connection string.
+4. Set `PORT` to the Railway-provided value if needed.
 5. Use `npm install`, `npm run build`, and `npm start` as the build/start commands.
 
 ## API Summary

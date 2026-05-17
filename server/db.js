@@ -1,393 +1,523 @@
-import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
-import fs from 'node:fs';
-import path from 'node:path';
+import mongoose from 'mongoose';
 
-const dataPath = process.env.DB_PATH || path.join(process.cwd(), 'data', 'team-task-tracker.db');
+const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/team-task-tracker';
 
-fs.mkdirSync(path.dirname(dataPath), { recursive: true });
+const userSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true, unique: true },
+    passwordHash: { type: String, required: true },
+  },
+  {
+    timestamps: true,
+  }
+);
 
-const database = new Database(dataPath);
-database.pragma('foreign_keys = ON');
-database.pragma('journal_mode = WAL');
+const projectMemberSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    role: { type: String, enum: ['Admin', 'Member'], required: true },
+    joinedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
-function now() {
-  return new Date().toISOString();
+const projectSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    description: { type: String, default: '', trim: true },
+    ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    members: { type: [projectMemberSchema], default: [] },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+const taskSchema = new mongoose.Schema(
+  {
+    projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+    title: { type: String, required: true, trim: true },
+    description: { type: String, default: '', trim: true },
+    status: { type: String, enum: ['Todo', 'In Progress', 'Done'], default: 'Todo' },
+    priority: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Medium' },
+    dueDate: { type: String, default: null },
+    assigneeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    createdById: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+taskSchema.index({ projectId: 1, status: 1, priority: 1, dueDate: 1 });
+
+const User = mongoose.models.User || mongoose.model('User', userSchema);
+const Project = mongoose.models.Project || mongoose.model('Project', projectSchema);
+const Task = mongoose.models.Task || mongoose.model('Task', taskSchema);
+
+function toId(value) {
+  return value ? String(value) : null;
 }
 
-function createTables() {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS projects (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS project_members (
-      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      role TEXT NOT NULL CHECK(role IN ('Admin', 'Member')),
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (project_id, user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL CHECK(status IN ('Todo', 'In Progress', 'Done')) DEFAULT 'Todo',
-      priority TEXT NOT NULL CHECK(priority IN ('Low', 'Medium', 'High')) DEFAULT 'Medium',
-      due_date TEXT,
-      assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      created_by_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+function nowIso(value) {
+  return value ? new Date(value).toISOString() : null;
 }
 
-function publicUser(row) {
-  if (!row) {
+function publicUser(doc) {
+  if (!doc) {
+    return null;
+  }
+
+  const plain = doc.toObject ? doc.toObject() : doc;
+  return {
+    id: toId(plain._id),
+    name: plain.name,
+    email: plain.email,
+    createdAt: nowIso(plain.createdAt),
+  };
+}
+
+function authUser(doc) {
+  if (!doc) {
+    return null;
+  }
+
+  const plain = doc.toObject ? doc.toObject() : doc;
+  return {
+    id: toId(plain._id),
+    name: plain.name,
+    email: plain.email,
+    passwordHash: plain.passwordHash,
+    createdAt: nowIso(plain.createdAt),
+  };
+}
+
+function projectStatsMap(doc, membersRole = null) {
+  if (!doc) {
     return null;
   }
 
   return {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    createdAt: row.created_at,
+    id: toId(doc._id),
+    name: doc.name,
+    description: doc.description,
+    ownerId: toId(doc.ownerId),
+    ownerName: doc.ownerName,
+    createdAt: nowIso(doc.createdAt),
+    role: membersRole,
+    taskCount: doc.taskCount || 0,
+    todoCount: doc.todoCount || 0,
+    inProgressCount: doc.inProgressCount || 0,
+    doneCount: doc.doneCount || 0,
+    overdueCount: doc.overdueCount || 0,
   };
 }
 
-function publicProject(row) {
-  if (!row) {
+function publicTask(doc) {
+  if (!doc) {
     return null;
   }
 
   return {
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    ownerId: row.owner_id,
-    ownerName: row.owner_name,
-    createdAt: row.created_at,
-    role: row.role,
-    taskCount: row.task_count,
-    todoCount: row.todo_count,
-    inProgressCount: row.in_progress_count,
-    doneCount: row.done_count,
-    overdueCount: row.overdue_count,
+    id: toId(doc._id),
+    projectId: toId(doc.projectId),
+    projectName: doc.projectName,
+    title: doc.title,
+    description: doc.description,
+    status: doc.status,
+    priority: doc.priority,
+    dueDate: doc.dueDate,
+    assigneeId: toId(doc.assigneeId),
+    assigneeName: doc.assigneeName || null,
+    assigneeEmail: doc.assigneeEmail || null,
+    createdById: toId(doc.createdById),
+    createdByName: doc.createdByName || null,
+    createdAt: nowIso(doc.createdAt),
+    updatedAt: nowIso(doc.updatedAt),
   };
 }
 
-function publicTask(row) {
-  if (!row) {
+async function connectMongo() {
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
+  await mongoose.connect(mongoUri, {
+    serverSelectionTimeoutMS: 10000,
+  });
+
+  await Promise.all([User.init(), Project.init(), Task.init()]);
+  return mongoose.connection;
+}
+
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
+async function getTaskDocuments(filter = {}) {
+  return Task.find(filter)
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .lean();
+}
+
+function normalizeDate(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null || value === '') {
     return null;
   }
 
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    projectName: row.project_name,
-    title: row.title,
-    description: row.description,
-    status: row.status,
-    priority: row.priority,
-    dueDate: row.due_date,
-    assigneeId: row.assignee_id,
-    assigneeName: row.assignee_name,
-    assigneeEmail: row.assignee_email,
-    createdById: row.created_by_id,
-    createdByName: row.created_by_name,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().slice(0, 10);
 }
 
-export function initDatabase() {
-  createTables();
-  seedDemoData();
+async function projectRoleForUser(project, userId) {
+  const member = project.members.find((entry) => String(entry.userId) === String(userId));
+  return member?.role || null;
 }
 
-export function findUserByEmail(email) {
-  return database
-    .prepare('SELECT * FROM users WHERE lower(email) = lower(?)')
-    .get(email.trim());
+async function buildProjectSummary(project, role = null) {
+  const tasks = await Task.find({ projectId: project._id }).lean();
+  const owner = await User.findById(project.ownerId).lean();
+  const taskCount = tasks.length;
+  const todoCount = tasks.filter((task) => task.status === 'Todo').length;
+  const inProgressCount = tasks.filter((task) => task.status === 'In Progress').length;
+  const doneCount = tasks.filter((task) => task.status === 'Done').length;
+  const overdueCount = tasks.filter(
+    (task) =>
+      task.status !== 'Done' &&
+      task.dueDate &&
+      new Date(task.dueDate).getTime() < new Date().setHours(0, 0, 0, 0)
+  ).length;
+
+  return projectStatsMap(
+    {
+      _id: project._id,
+      name: project.name,
+      description: project.description,
+      ownerId: project.ownerId,
+      ownerName: owner?.name || null,
+      createdAt: project.createdAt,
+      taskCount,
+      todoCount,
+      inProgressCount,
+      doneCount,
+      overdueCount,
+    },
+    role
+  );
 }
 
-export function findUserById(id) {
-  return database.prepare('SELECT * FROM users WHERE id = ?').get(id);
+export async function initDatabase() {
+  await connectMongo();
+  await seedDemoData();
 }
 
-export function createUser({ name, email, passwordHash }) {
-  const statement = database.prepare(`
-    INSERT INTO users (name, email, password_hash, created_at)
-    VALUES (?, ?, ?, ?)
-  `);
-  const result = statement.run(name.trim(), email.trim().toLowerCase(), passwordHash, now());
-  return findUserById(result.lastInsertRowid);
+export async function findUserByEmail(email) {
+  await connectMongo();
+  const user = await User.findOne({ email: email.trim().toLowerCase() }).lean();
+  return authUser(user);
 }
 
-export function createProject({ ownerId, name, description }) {
-  const result = database
-    .prepare(`
-      INSERT INTO projects (name, description, owner_id, created_at)
-      VALUES (?, ?, ?, ?)
-    `)
-    .run(name.trim(), description.trim(), ownerId, now());
+export async function findUserById(id) {
+  await connectMongo();
+  if (!isValidObjectId(id)) {
+    return null;
+  }
 
-  const projectId = Number(result.lastInsertRowid);
-  addProjectMember({ projectId, userId: ownerId, role: 'Admin' });
-  return getProjectForUser({ projectId, userId: ownerId });
+  const user = await User.findById(id).lean();
+  return authUser(user);
 }
 
-export function addProjectMember({ projectId, userId, role }) {
-  database
-    .prepare(`
-      INSERT OR REPLACE INTO project_members (project_id, user_id, role, created_at)
-      VALUES (?, ?, ?, ?)
-    `)
-    .run(projectId, userId, role, now());
+export async function createUser({ name, email, passwordHash }) {
+  await connectMongo();
+  const user = await User.create({
+    name: name.trim(),
+    email: email.trim().toLowerCase(),
+    passwordHash,
+  });
+
+  const createdUser = await User.findById(user._id).lean();
+  return authUser(createdUser);
 }
 
-export function getProjectMember({ projectId, userId }) {
-  return database
-    .prepare('SELECT * FROM project_members WHERE project_id = ? AND user_id = ?')
-    .get(projectId, userId);
+export async function addProjectMember({ projectId, userId, role }) {
+  await connectMongo();
+  if (!isValidObjectId(projectId) || !isValidObjectId(userId)) {
+    return null;
+  }
+
+  await Project.updateOne(
+    { _id: projectId, 'members.userId': { $ne: userId } },
+    { $push: { members: { userId, role, joinedAt: new Date() } } }
+  );
+
+  await Project.updateOne(
+    { _id: projectId, 'members.userId': userId },
+    { $set: { 'members.$.role': role, 'members.$.joinedAt': new Date() } }
+  );
 }
 
-export function listProjectsForUser(userId) {
-  return database
-    .prepare(
-      `
-        SELECT
-          p.*,
-          pm.role AS role,
-          owner.name AS owner_name,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id
-          ) AS task_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'Todo'
-          ) AS todo_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'In Progress'
-          ) AS in_progress_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'Done'
-          ) AS done_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id
-              AND t.status != 'Done'
-              AND t.due_date IS NOT NULL
-              AND date(t.due_date) < date('now')
-          ) AS overdue_count
-        FROM projects p
-        INNER JOIN project_members pm ON pm.project_id = p.id
-        INNER JOIN users owner ON owner.id = p.owner_id
-        WHERE pm.user_id = ?
-        ORDER BY datetime(p.created_at) DESC, p.id DESC
-      `
-    )
-    .all(userId)
-    .map(publicProject);
+export async function getProjectMember({ projectId, userId }) {
+  await connectMongo();
+  if (!isValidObjectId(projectId) || !isValidObjectId(userId)) {
+    return null;
+  }
+
+  const project = await Project.findById(projectId).lean();
+  if (!project) {
+    return null;
+  }
+
+  return project.members.find((member) => String(member.userId) === String(userId)) || null;
 }
 
-export function getProjectForUser({ projectId, userId }) {
-  const row = database
-    .prepare(
-      `
-        SELECT
-          p.*,
-          pm.role AS role,
-          owner.name AS owner_name,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id
-          ) AS task_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'Todo'
-          ) AS todo_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'In Progress'
-          ) AS in_progress_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id AND t.status = 'Done'
-          ) AS done_count,
-          (
-            SELECT COUNT(*)
-            FROM tasks t
-            WHERE t.project_id = p.id
-              AND t.status != 'Done'
-              AND t.due_date IS NOT NULL
-              AND date(t.due_date) < date('now')
-          ) AS overdue_count
-        FROM projects p
-        INNER JOIN project_members pm ON pm.project_id = p.id
-        INNER JOIN users owner ON owner.id = p.owner_id
-        WHERE p.id = ? AND pm.user_id = ?
-      `
-    )
-    .get(projectId, userId);
+export async function createProject({ ownerId, name, description }) {
+  await connectMongo();
+  if (!isValidObjectId(ownerId)) {
+    return null;
+  }
 
-  return publicProject(row);
+  const project = await Project.create({
+    name: name.trim(),
+    description: (description || '').trim(),
+    ownerId,
+    members: [{ userId: ownerId, role: 'Admin', joinedAt: new Date() }],
+  });
+
+  return getProjectForUser({ projectId: project._id, userId: ownerId });
 }
 
-export function getProjectById(projectId) {
-  return database.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+export async function getProjectById(projectId) {
+  await connectMongo();
+  if (!isValidObjectId(projectId)) {
+    return null;
+  }
+
+  return Project.findById(projectId).lean();
 }
 
-export function listProjectMembers(projectId) {
-  return database
-    .prepare(
-      `
-        SELECT
-          u.id,
-          u.name,
-          u.email,
-          pm.role,
-          pm.created_at
-        FROM project_members pm
-        INNER JOIN users u ON u.id = pm.user_id
-        WHERE pm.project_id = ?
-        ORDER BY CASE pm.role WHEN 'Admin' THEN 0 ELSE 1 END, u.name COLLATE NOCASE
-      `
-    )
-    .all(projectId)
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      email: row.email,
-      role: row.role,
-      createdAt: row.created_at,
-    }));
-}
+export async function listProjectsForUser(userId) {
+  await connectMongo();
+  if (!isValidObjectId(userId)) {
+    return [];
+  }
 
-export function listAssignableMembers(projectId) {
-  return database
-    .prepare(
-      `
-        SELECT
-          u.id,
-          u.name,
-          u.email,
-          pm.role
-        FROM project_members pm
-        INNER JOIN users u ON u.id = pm.user_id
-        WHERE pm.project_id = ?
-        ORDER BY u.name COLLATE NOCASE
-      `
-    )
-    .all(projectId);
-}
+  const projects = await Project.find({ 'members.userId': userId }).sort({ createdAt: -1 }).lean();
+  const ownerIds = [...new Set(projects.map((project) => String(project.ownerId)))];
+  const owners = await User.find({ _id: { $in: ownerIds } }).lean();
+  const ownerLookup = new Map(owners.map((owner) => [String(owner._id), owner.name]));
 
-export function listProjectTasks(projectId) {
-  return database
-    .prepare(
-      `
-        SELECT
-          t.*,
-          creator.name AS created_by_name,
-          assignee.name AS assignee_name,
-          assignee.email AS assignee_email
-        FROM tasks t
-        INNER JOIN users creator ON creator.id = t.created_by_id
-        LEFT JOIN users assignee ON assignee.id = t.assignee_id
-        WHERE t.project_id = ?
-        ORDER BY
-          CASE t.status WHEN 'Todo' THEN 0 WHEN 'In Progress' THEN 1 ELSE 2 END,
-          CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
-          COALESCE(date(t.due_date), '9999-12-31') ASC,
-          datetime(t.updated_at) DESC
-      `
-    )
-    .all(projectId)
-    .map(publicTask);
-}
+  const taskCounts = await Task.aggregate([
+    { $match: { projectId: { $in: projects.map((project) => project._id) } } },
+    {
+      $group: {
+        _id: '$projectId',
+        taskCount: { $sum: 1 },
+        todoCount: { $sum: { $cond: [{ $eq: ['$status', 'Todo'] }, 1, 0] } },
+        inProgressCount: { $sum: { $cond: [{ $eq: ['$status', 'In Progress'] }, 1, 0] } },
+        doneCount: { $sum: { $cond: [{ $eq: ['$status', 'Done'] }, 1, 0] } },
+        overdueCount: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$status', 'Done'] },
+                  { $ne: ['$dueDate', null] },
+                  { $lt: ['$dueDate', new Date().toISOString().slice(0, 10)] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ]);
 
-export function getTaskById(taskId) {
-  return database
-    .prepare(
-      `
-        SELECT
-          t.*,
-          creator.name AS created_by_name,
-          assignee.name AS assignee_name,
-          assignee.email AS assignee_email
-        FROM tasks t
-        INNER JOIN users creator ON creator.id = t.created_by_id
-        LEFT JOIN users assignee ON assignee.id = t.assignee_id
-        WHERE t.id = ?
-      `
-    )
-    .get(taskId);
-}
+  const countLookup = new Map(taskCounts.map((entry) => [String(entry._id), entry]));
 
-export function createTask({ projectId, title, description, status, priority, dueDate, assigneeId, createdById }) {
-  const result = database
-    .prepare(
-      `
-        INSERT INTO tasks (
-          project_id,
-          title,
-          description,
-          status,
-          priority,
-          due_date,
-          assignee_id,
-          created_by_id,
-          created_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-    .run(
-      projectId,
-      title.trim(),
-      description.trim(),
-      status,
-      priority,
-      dueDate || null,
-      assigneeId || null,
-      createdById,
-      now(),
-      now()
+  return projects.map((project) => {
+    const role = project.members.find((member) => String(member.userId) === String(userId))?.role || null;
+    const counts = countLookup.get(String(project._id)) || {};
+
+    return projectStatsMap(
+      {
+        _id: project._id,
+        name: project.name,
+        description: project.description,
+        ownerId: project.ownerId,
+        ownerName: ownerLookup.get(String(project.ownerId)) || null,
+        createdAt: project.createdAt,
+        taskCount: counts.taskCount || 0,
+        todoCount: counts.todoCount || 0,
+        inProgressCount: counts.inProgressCount || 0,
+        doneCount: counts.doneCount || 0,
+        overdueCount: counts.overdueCount || 0,
+      },
+      role
     );
-
-  return publicTask(getTaskById(result.lastInsertRowid));
+  });
 }
 
-export function updateTask(taskId, patch) {
-  const currentTask = getTaskById(taskId);
+export async function getProjectForUser({ projectId, userId }) {
+  await connectMongo();
+  if (!isValidObjectId(projectId) || !isValidObjectId(userId)) {
+    return null;
+  }
+
+  const project = await Project.findOne({ _id: projectId, 'members.userId': userId }).lean();
+  if (!project) {
+    return null;
+  }
+
+  const role = project.members.find((member) => String(member.userId) === String(userId))?.role || null;
+  return buildProjectSummary(project, role);
+}
+
+export async function listProjectMembers(projectId) {
+  await connectMongo();
+  if (!isValidObjectId(projectId)) {
+    return [];
+  }
+
+  const project = await Project.findById(projectId).lean();
+  if (!project) {
+    return [];
+  }
+
+  const memberIds = project.members.map((member) => member.userId);
+  const users = await User.find({ _id: { $in: memberIds } }).lean();
+  const userLookup = new Map(users.map((user) => [String(user._id), user]));
+
+  return project.members
+    .map((member) => {
+      const user = userLookup.get(String(member.userId));
+      if (!user) {
+        return null;
+      }
+
+      return {
+        id: toId(user._id),
+        name: user.name,
+        email: user.email,
+        role: member.role,
+        createdAt: nowIso(member.joinedAt || project.createdAt),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.role !== right.role) {
+        return left.role === 'Admin' ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+}
+
+export async function listAssignableMembers(projectId) {
+  await connectMongo();
+  if (!isValidObjectId(projectId)) {
+    return [];
+  }
+
+  const members = await listProjectMembers(projectId);
+  return members.map((member) => ({
+    id: member.id,
+    name: member.name,
+    email: member.email,
+    role: member.role,
+  }));
+}
+
+export async function listProjectTasks(projectId) {
+  await connectMongo();
+  if (!isValidObjectId(projectId)) {
+    return [];
+  }
+
+  const tasks = await Task.find({ projectId }).sort({ status: 1, priority: 1, dueDate: 1, updatedAt: -1 }).lean();
+  const project = await Project.findById(projectId).lean();
+  const userIds = [...new Set(tasks.flatMap((task) => [task.createdById, task.assigneeId].filter(Boolean)).map(String))];
+  const users = await User.find({ _id: { $in: userIds } }).lean();
+  const userLookup = new Map(users.map((user) => [String(user._id), user]));
+
+  return tasks.map((task) => {
+    const createdBy = userLookup.get(String(task.createdById));
+    const assignee = task.assigneeId ? userLookup.get(String(task.assigneeId)) : null;
+
+    return publicTask({
+      ...task,
+      projectName: project?.name || null,
+      createdByName: createdBy?.name || null,
+      assigneeName: assignee?.name || null,
+      assigneeEmail: assignee?.email || null,
+    });
+  });
+}
+
+export async function getTaskById(taskId) {
+  await connectMongo();
+  if (!isValidObjectId(taskId)) {
+    return null;
+  }
+
+  const task = await Task.findById(taskId).lean();
+  if (!task) {
+    return null;
+  }
+
+  const [project, createdBy, assignee] = await Promise.all([
+    Project.findById(task.projectId).lean(),
+    User.findById(task.createdById).lean(),
+    task.assigneeId ? User.findById(task.assigneeId).lean() : Promise.resolve(null),
+  ]);
+
+  return publicTask({
+    ...task,
+    projectName: project?.name || null,
+    createdByName: createdBy?.name || null,
+    assigneeName: assignee?.name || null,
+    assigneeEmail: assignee?.email || null,
+  });
+}
+
+export async function createTask({ projectId, title, description, status, priority, dueDate, assigneeId, createdById }) {
+  await connectMongo();
+  if (!isValidObjectId(projectId) || !isValidObjectId(createdById)) {
+    return null;
+  }
+
+  const task = await Task.create({
+    projectId,
+    title: title.trim(),
+    description: (description || '').trim(),
+    status,
+    priority,
+    dueDate: dueDate || null,
+    assigneeId: assigneeId || null,
+    createdById,
+  });
+
+  return getTaskById(task._id);
+}
+
+export async function updateTask(taskId, patch) {
+  await connectMongo();
+  if (!isValidObjectId(taskId)) {
+    return null;
+  }
+
+  const currentTask = await Task.findById(taskId).lean();
   if (!currentTask) {
     return null;
   }
@@ -397,88 +527,107 @@ export function updateTask(taskId, patch) {
     description: patch.description ?? currentTask.description,
     status: patch.status ?? currentTask.status,
     priority: patch.priority ?? currentTask.priority,
-    dueDate: Object.prototype.hasOwnProperty.call(patch, 'dueDate') ? patch.dueDate : currentTask.due_date,
-    assigneeId: Object.prototype.hasOwnProperty.call(patch, 'assigneeId') ? patch.assigneeId : currentTask.assignee_id,
+    dueDate: Object.prototype.hasOwnProperty.call(patch, 'dueDate') ? patch.dueDate : currentTask.dueDate,
+    assigneeId: Object.prototype.hasOwnProperty.call(patch, 'assigneeId') ? patch.assigneeId : currentTask.assigneeId,
   };
 
-  database
-    .prepare(
-      `
-        UPDATE tasks
-        SET title = ?, description = ?, status = ?, priority = ?, due_date = ?, assignee_id = ?, updated_at = ?
-        WHERE id = ?
-      `
-    )
-    .run(
-      nextTask.title.trim(),
-      nextTask.description.trim(),
-      nextTask.status,
-      nextTask.priority,
-      nextTask.dueDate || null,
-      nextTask.assigneeId || null,
-      now(),
-      taskId
-    );
+  await Task.updateOne(
+    { _id: taskId },
+    {
+      $set: {
+        title: nextTask.title.trim(),
+        description: nextTask.description.trim(),
+        status: nextTask.status,
+        priority: nextTask.priority,
+        dueDate: nextTask.dueDate || null,
+        assigneeId: nextTask.assigneeId || null,
+      },
+    }
+  );
 
-  return publicTask(getTaskById(taskId));
+  return getTaskById(taskId);
 }
 
-export function getDashboard(userId) {
-  const projects = listProjectsForUser(userId);
-  const stats = database
-    .prepare(
-      `
-        SELECT
-          COUNT(*) AS task_count,
-          SUM(CASE WHEN t.status = 'Todo' THEN 1 ELSE 0 END) AS todo_count,
-          SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress_count,
-          SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) AS done_count,
-          SUM(CASE WHEN t.status != 'Done' AND t.due_date IS NOT NULL AND date(t.due_date) < date('now') THEN 1 ELSE 0 END) AS overdue_count,
-          SUM(CASE WHEN t.assignee_id = ? THEN 1 ELSE 0 END) AS assigned_to_me_count
-        FROM tasks t
-        INNER JOIN project_members pm ON pm.project_id = t.project_id AND pm.user_id = ?
-      `
-    )
-    .get(userId, userId);
+export async function getDashboard(userId) {
+  await connectMongo();
+  if (!isValidObjectId(userId)) {
+    return {
+      projects: [],
+      stats: {
+        projectCount: 0,
+        taskCount: 0,
+        todoCount: 0,
+        inProgressCount: 0,
+        doneCount: 0,
+        overdueCount: 0,
+        assignedToMeCount: 0,
+      },
+      recentTasks: [],
+    };
+  }
 
-  const recentTasks = database
-    .prepare(
-      `
-        SELECT
-          t.*,
-          p.name AS project_name,
-          creator.name AS created_by_name,
-          assignee.name AS assignee_name,
-          assignee.email AS assignee_email
-        FROM tasks t
-        INNER JOIN projects p ON p.id = t.project_id
-        INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-        INNER JOIN users creator ON creator.id = t.created_by_id
-        LEFT JOIN users assignee ON assignee.id = t.assignee_id
-        ORDER BY datetime(t.updated_at) DESC
-        LIMIT 6
-      `
-    )
-    .all(userId)
-    .map(publicTask);
+  const projects = await listProjectsForUser(userId);
+  const projectIds = projects.map((project) => project.id);
+  const mongoProjectIds = await Project.find({ _id: { $in: projectIds } }).select('_id').lean();
+  const taskDocs = await Task.find({ projectId: { $in: mongoProjectIds.map((project) => project._id) } }).lean();
+
+  const assignedToMeCount = taskDocs.filter((task) => String(task.assigneeId) === String(userId)).length;
+  const overdueCount = taskDocs.filter(
+    (task) =>
+      task.status !== 'Done' &&
+      task.dueDate &&
+      new Date(task.dueDate).getTime() < new Date().setHours(0, 0, 0, 0)
+  ).length;
+
+  const recentTaskDocs = await Task.find({ projectId: { $in: mongoProjectIds.map((project) => project._id) } })
+    .sort({ updatedAt: -1 })
+    .limit(6)
+    .lean();
+
+  const userIds = [
+    ...new Set(
+      recentTaskDocs
+        .flatMap((task) => [task.createdById, task.assigneeId].filter(Boolean))
+        .map(String)
+    ),
+  ];
+  const users = await User.find({ _id: { $in: userIds } }).lean();
+  const userLookup = new Map(users.map((user) => [String(user._id), user]));
+  const projectLookup = new Map((await Project.find({ _id: { $in: mongoProjectIds.map((project) => project._id) } }).lean()).map((project) => [String(project._id), project]));
+
+  const recentTasks = recentTaskDocs.map((task) => {
+    const createdBy = userLookup.get(String(task.createdById));
+    const assignee = task.assigneeId ? userLookup.get(String(task.assigneeId)) : null;
+    const project = projectLookup.get(String(task.projectId));
+
+    return publicTask({
+      ...task,
+      projectName: project?.name || null,
+      createdByName: createdBy?.name || null,
+      assigneeName: assignee?.name || null,
+      assigneeEmail: assignee?.email || null,
+    });
+  });
 
   return {
     projects,
     stats: {
       projectCount: projects.length,
-      taskCount: Number(stats.task_count || 0),
-      todoCount: Number(stats.todo_count || 0),
-      inProgressCount: Number(stats.in_progress_count || 0),
-      doneCount: Number(stats.done_count || 0),
-      overdueCount: Number(stats.overdue_count || 0),
-      assignedToMeCount: Number(stats.assigned_to_me_count || 0),
+      taskCount: taskDocs.length,
+      todoCount: taskDocs.filter((task) => task.status === 'Todo').length,
+      inProgressCount: taskDocs.filter((task) => task.status === 'In Progress').length,
+      doneCount: taskDocs.filter((task) => task.status === 'Done').length,
+      overdueCount,
+      assignedToMeCount,
     },
     recentTasks,
   };
 }
 
-function seedDemoData() {
-  const existingUsers = database.prepare('SELECT COUNT(*) AS count FROM users').get().count;
+async function seedDemoData() {
+  await connectMongo();
+
+  const existingUsers = await User.countDocuments();
   if (existingUsers > 0) {
     return;
   }
@@ -486,56 +635,58 @@ function seedDemoData() {
   const adminPassword = bcrypt.hashSync('Demo123!', 10);
   const memberPassword = bcrypt.hashSync('Demo123!', 10);
 
-  const admin = createUser({
+  const admin = await User.create({
     name: 'Demo Admin',
     email: 'admin@teamtask.local',
     passwordHash: adminPassword,
   });
 
-  const member = createUser({
+  const member = await User.create({
     name: 'Demo Member',
     email: 'member@teamtask.local',
     passwordHash: memberPassword,
   });
 
-  const project = createProject({
-    ownerId: admin.id,
+  const project = await Project.create({
     name: 'Website Refresh',
     description: 'Launch tasks, polish content, and coordinate the final release.',
+    ownerId: admin._id,
+    members: [
+      { userId: admin._id, role: 'Admin', joinedAt: new Date() },
+      { userId: member._id, role: 'Member', joinedAt: new Date() },
+    ],
   });
 
-  addProjectMember({ projectId: project.id, userId: member.id, role: 'Member' });
-
-  createTask({
-    projectId: project.id,
-    title: 'Draft homepage copy',
-    description: 'Write concise launch messaging for the hero section.',
-    status: 'In Progress',
-    priority: 'High',
-    dueDate: '2026-05-14',
-    assigneeId: member.id,
-    createdById: admin.id,
-  });
-
-  createTask({
-    projectId: project.id,
-    title: 'Approve design tokens',
-    description: 'Check spacing, color, and button styles before handoff.',
-    status: 'Todo',
-    priority: 'Medium',
-    dueDate: '2026-05-20',
-    assigneeId: admin.id,
-    createdById: admin.id,
-  });
-
-  createTask({
-    projectId: project.id,
-    title: 'Prepare launch checklist',
-    description: 'Collect deployment notes and post-release checks.',
-    status: 'Done',
-    priority: 'Low',
-    dueDate: '2026-05-10',
-    assigneeId: admin.id,
-    createdById: admin.id,
-  });
+  await Task.insertMany([
+    {
+      projectId: project._id,
+      title: 'Draft homepage copy',
+      description: 'Write concise launch messaging for the hero section.',
+      status: 'In Progress',
+      priority: 'High',
+      dueDate: '2026-05-14',
+      assigneeId: member._id,
+      createdById: admin._id,
+    },
+    {
+      projectId: project._id,
+      title: 'Approve design tokens',
+      description: 'Check spacing, color, and button styles before handoff.',
+      status: 'Todo',
+      priority: 'Medium',
+      dueDate: '2026-05-20',
+      assigneeId: admin._id,
+      createdById: admin._id,
+    },
+    {
+      projectId: project._id,
+      title: 'Prepare launch checklist',
+      description: 'Collect deployment notes and post-release checks.',
+      status: 'Done',
+      priority: 'Low',
+      dueDate: '2026-05-10',
+      assigneeId: admin._id,
+      createdById: admin._id,
+    },
+  ]);
 }
