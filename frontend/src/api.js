@@ -1,5 +1,7 @@
 const tokenKey = 'team-task-tracker.token';
-const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL;
+const fallbackApiBase = import.meta.env.PROD ? 'https://team-task-tracker-production-d28d.up.railway.app' : '';
+const apiBase = (configuredApiBase || fallbackApiBase).replace(/\/$/, '');
 
 export function getToken() {
   return window.localStorage.getItem(tokenKey);
