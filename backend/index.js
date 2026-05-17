@@ -1,8 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { authenticate, signToken } from './auth.js';
 import {
@@ -27,10 +25,19 @@ import {
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
-const isProduction = process.env.NODE_ENV === 'production';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '..');
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  return next();
+});
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -323,18 +330,6 @@ async function bootstrap() {
     return res.json({ task: updatedTask });
   });
 
-  if (isProduction) {
-    const distPath = path.join(projectRoot, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) {
-        return next();
-      }
-
-      return res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
   app.use((req, res) => {
     if (req.path.startsWith('/api')) {
       return res.status(404).json({ message: 'API route not found.' });
@@ -344,7 +339,7 @@ async function bootstrap() {
   });
 
   app.listen(port, () => {
-    console.log(`Team Task Tracker is running on http://127.0.0.1:${port}`);
+    console.log(`Team Task Tracker API is running on http://127.0.0.1:${port}`);
   });
 }
 

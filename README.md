@@ -4,10 +4,16 @@ Team Task Tracker is a full-stack project management app with signup/login, proj
 
 ## Stack
 
-- React + Vite frontend
-- Express REST API
+- `frontend/`: React + Vite app
+- `backend/`: Express REST API
 - MongoDB database with `mongoose`
 - JWT authentication and bcrypt password hashing
+
+## Project Structure
+
+- `backend/` contains the API server, auth, and database code.
+- `frontend/` contains the Vite app, UI source, and frontend build config.
+- The root `package.json` is a workspace helper so you can run both apps together during local development.
 
 ## Features
 
@@ -25,19 +31,20 @@ Team Task Tracker is a full-stack project management app with signup/login, proj
 npm install
 ```
 
-2. Copy the example environment file and set a strong secret:
+2. Copy the example environment files and set the values for each app:
 
 ```bash
-copy .env.example .env
+copy backend\.env.example backend\.env
+copy frontend\.env.example frontend\.env
 ```
 
-3. Start the app in development mode:
+3. Install dependencies for the workspace and start the app in development mode:
 
 ```bash
 npm run dev
 ```
 
-4. Make sure MongoDB is running locally or update `MONGODB_URI` to your Atlas connection string.
+4. Make sure MongoDB is running locally or update `MONGODB_URI` in `backend/.env` to your Atlas connection string.
 5. Open the frontend at the Vite dev server URL shown in the terminal.
 
 ## Demo Accounts
@@ -56,15 +63,25 @@ npm run build
 npm start
 ```
 
-The Express server serves the built frontend from `dist` in production.
+If you deploy the frontend and backend separately, Railway should use:
+
+- backend root directory: `backend`
+- frontend root directory: `frontend`
+
+For the frontend service, use `npm run build` and publish `dist`. For the backend service, use `npm start`.
 
 ## Railway Deployment
 
-1. Create a Railway service from this repository.
-2. Set `JWT_SECRET` in Railway variables.
-3. Set `MONGODB_URI` to your Railway MongoDB add-on or Atlas connection string.
-4. Set `PORT` to the Railway-provided value if needed.
-5. Use `npm install`, `npm run build`, and `npm start` as the build/start commands.
+1. Create one Railway service for the backend and one for the frontend.
+2. Set the backend service root directory to `backend` and the frontend service root directory to `frontend`.
+3. Set `JWT_SECRET`, `MONGODB_URI`, and `CORS_ORIGIN` on the backend service.
+4. Set `VITE_API_BASE_URL` on the frontend service to the backend public URL.
+5. Use `npm install`/`npm start` for the backend service and `npm install`/`npm run build` for the frontend service.
+
+## Environment Files
+
+- `backend/.env.example` contains `JWT_SECRET`, `MONGODB_URI`, `PORT`, and `CORS_ORIGIN`.
+- `frontend/.env.example` contains `VITE_API_BASE_URL`.
 
 ## API Summary
 

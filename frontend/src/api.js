@@ -1,4 +1,5 @@
 const tokenKey = 'team-task-tracker.token';
+const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export function getToken() {
   return window.localStorage.getItem(tokenKey);
@@ -12,6 +13,10 @@ export function clearToken() {
   window.localStorage.removeItem(tokenKey);
 }
 
+function resolvePath(path) {
+  return apiBase ? `${apiBase}${path}` : path;
+}
+
 export async function apiRequest(path, { method = 'GET', body, token } = {}) {
   const headers = {
     'Content-Type': 'application/json',
@@ -22,7 +27,7 @@ export async function apiRequest(path, { method = 'GET', body, token } = {}) {
     headers.Authorization = `Bearer ${authToken}`;
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(resolvePath(path), {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
