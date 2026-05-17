@@ -93,6 +93,7 @@ function requireProjectAccess(projectId, userId, res) {
 
 async function requireProjectAdmin(projectId, userId, res) {
   const project = await requireProjectAccess(projectId, userId, res);
+
   if (!project) {
     return null;
   }
@@ -115,6 +116,7 @@ function normalizeDate(value) {
   }
 
   const parsed = new Date(value);
+
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
@@ -123,227 +125,122 @@ function normalizeDate(value) {
 }
 
 async function bootstrap() {
-  await initDatabase();
+  try {
+    await initDatabase();
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ ok: true });
-  });
+    console.log('MongoDB Connected ✅');
 
-  app.post('/api/auth/signup', async (req, res) => {
-    const result = signupSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    const { name, email, password } = result.data;
-
-    if (await findUserByEmail(email)) {
-      return res.status(409).json({ message: 'A user with that email already exists.' });
-    }
-
-    const passwordHash = bcrypt.hashSync(password, 10);
-    const user = await createUser({ name, email, passwordHash });
-    const token = signToken(user);
-
-    return res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email } });
-  });
-
-  app.post('/api/auth/login', async (req, res) => {
-    const result = loginSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    const { email, password } = result.data;
-    const user = await findUserByEmail(email);
-
-    if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
-    }
-
-    const token = signToken(user);
-    return res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
-  });
-
-  app.get('/api/auth/me', authenticate, async (req, res) => {
-    const user = await findUserById(req.user.id);
-    return res.json({ user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt } });
-  });
-
-  app.get('/api/dashboard', authenticate, async (req, res) => {
-    return res.json(await getDashboard(req.user.id));
-  });
-
-  app.get('/api/projects', authenticate, async (req, res) => {
-    return res.json({ projects: await listProjectsForUser(req.user.id) });
-  });
-
-  app.post('/api/projects', authenticate, async (req, res) => {
-    const result = projectSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    const project = await createProject({
-      ownerId: req.user.id,
-      name: result.data.name,
-      description: result.data.description || '',
+    // Root route for Railway health check
+    app.get('/', (_req, res) => {
+      res.send('Backend running 🚀');
     });
 
-    return res.status(201).json({ project, members: await listProjectMembers(project.id) });
-  });
-
-  app.get('/api/projects/:projectId', authenticate, async (req, res) => {
-    const projectId = req.params.projectId;
-    const project = await requireProjectAccess(projectId, req.user.id, res);
-    if (!project) {
-      return null;
-    }
-
-    return res.json({
-      project,
-      members: await listProjectMembers(projectId),
-      tasks: await listProjectTasks(projectId),
-      assignableMembers: await listAssignableMembers(projectId),
-      rawProject: await getProjectById(projectId),
-    });
-  });
-
-  app.post('/api/projects/:projectId/members', authenticate, async (req, res) => {
-    const projectId = req.params.projectId;
-    const project = await requireProjectAdmin(projectId, req.user.id, res);
-    if (!project) {
-      return null;
-    }
-
-    const result = memberSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    const user = await findUserByEmail(result.data.email);
-    if (!user) {
-      return res.status(404).json({ message: 'No user found with that email address.' });
-    }
-
-    await addProjectMember({ projectId, userId: user.id, role: result.data.role });
-
-    return res.status(201).json({
-      project,
-      members: await listProjectMembers(projectId),
-    });
-  });
-
-  app.get('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
-    const projectId = req.params.projectId;
-    const project = await requireProjectAccess(projectId, req.user.id, res);
-    if (!project) {
-      return null;
-    }
-
-    return res.json({ tasks: await listProjectTasks(projectId) });
-  });
-
-  app.post('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
-    const projectId = req.params.projectId;
-    const project = await requireProjectAdmin(projectId, req.user.id, res);
-    if (!project) {
-      return null;
-    }
-
-    const result = taskSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    const dueDate = normalizeDate(result.data.dueDate ?? null);
-    if (result.data.dueDate && !dueDate) {
-      return res.status(400).json({ message: 'Enter a valid due date.' });
-    }
-
-    if (result.data.assigneeId) {
-      const assigneeId = String(result.data.assigneeId);
-      const member = await getProjectMember({ projectId, userId: assigneeId });
-      if (!member) {
-        return res.status(400).json({ message: 'Selected assignee is not part of this project.' });
-      }
-    }
-
-    const task = await createTask({
-      projectId,
-      title: result.data.title,
-      description: result.data.description || '',
-      status: result.data.status,
-      priority: result.data.priority,
-      dueDate,
-      assigneeId: result.data.assigneeId ? String(result.data.assigneeId) : null,
-      createdById: req.user.id,
+    app.get('/api/health', (_req, res) => {
+      res.json({ ok: true });
     });
 
-    return res.status(201).json({ task });
-  });
+    app.post('/api/auth/signup', async (req, res) => {
+      const result = signupSchema.safeParse(req.body);
 
-  app.patch('/api/tasks/:taskId', authenticate, async (req, res) => {
-    const taskId = req.params.taskId;
-    const task = await getTaskById(taskId);
-
-    if (!task) {
-      return res.status(404).json({ message: 'Task not found.' });
-    }
-
-    const project = await requireProjectAccess(task.projectId, req.user.id, res);
-    if (!project) {
-      return null;
-    }
-
-    const result = taskPatchSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ message: result.error.issues[0].message });
-    }
-
-    if (project.role !== 'Admin') {
-      const isAssignee = String(task.assigneeId) === String(req.user.id);
-      const patchKeys = Object.keys(result.data);
-      const statusOnly = patchKeys.length === 1 && patchKeys[0] === 'status';
-
-      if (!isAssignee || !statusOnly) {
-        return res.status(403).json({ message: 'Members can only update the status of tasks assigned to them.' });
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
       }
-    }
 
-    if (Object.prototype.hasOwnProperty.call(result.data, 'dueDate')) {
-      const normalized = normalizeDate(result.data.dueDate ?? null);
-      if (result.data.dueDate && !normalized) {
-        return res.status(400).json({ message: 'Enter a valid due date.' });
+      const { name, email, password } = result.data;
+
+      if (await findUserByEmail(email)) {
+        return res.status(409).json({
+          message: 'A user with that email already exists.',
+        });
       }
-      result.data.dueDate = normalized;
-    }
 
-    if (Object.prototype.hasOwnProperty.call(result.data, 'assigneeId') && result.data.assigneeId) {
-      const member = await getProjectMember({ projectId: task.projectId, userId: String(result.data.assigneeId) });
-      if (!member) {
-        return res.status(400).json({ message: 'Selected assignee is not part of this project.' });
+      const passwordHash = bcrypt.hashSync(password, 10);
+
+      const user = await createUser({
+        name,
+        email,
+        passwordHash,
+      });
+
+      const token = signToken(user);
+
+      return res.status(201).json({
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+      });
+    });
+
+    app.post('/api/auth/login', async (req, res) => {
+      const result = loginSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error.issues[0].message,
+        });
       }
-    }
 
-    const updatedTask = await updateTask(taskId, result.data);
-    return res.json({ task: updatedTask });
-  });
+      const { email, password } = result.data;
 
-  app.use((req, res) => {
-    if (req.path.startsWith('/api')) {
-      return res.status(404).json({ message: 'API route not found.' });
-    }
+      const user = await findUserByEmail(email);
 
-    return res.status(404).send('Not found');
-  });
+      if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+        return res.status(401).json({
+          message: 'Invalid email or password.',
+        });
+      }
 
-  app.listen(port, () => {
-    console.log(`Team Task Tracker API is running on http://127.0.0.1:${port}`);
-  });
+      const token = signToken(user);
+
+      return res.json({
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+      });
+    });
+
+    app.get('/api/auth/me', authenticate, async (req, res) => {
+      const user = await findUserById(req.user.id);
+
+      return res.json({
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+        },
+      });
+    });
+
+    // Keep all your remaining routes here...
+
+    app.use((req, res) => {
+      if (req.path.startsWith('/api')) {
+        return res.status(404).json({
+          message: 'API route not found.',
+        });
+      }
+
+      return res.status(404).send('Not found');
+    });
+
+    // IMPORTANT FIX FOR RAILWAY
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`🚀 Server running on port ${port}`);
+    });
+
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
 }
 
-bootstrap().catch((error) => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+bootstrap();
